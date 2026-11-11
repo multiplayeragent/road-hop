@@ -1,0 +1,21 @@
+{
+  "name": "Road Hop",
+  "genre": "arcade",
+  "dim": "2D",
+  "mode": "Versus",
+  "players": "2–12",
+  "hook": "Hop the traffic. Don't fall behind. Last one hops.",
+  "how": "Everyone hops across the same endless roads, rivers and train tracks. Ride the logs, time the cars, and watch for the flashing train light. The roller follows the leader and squishes anyone left behind. Last one hopping wins the round.",
+  "controls": "Arrow keys or WASD to hop, or tap to hop forward and swipe to hop any way",
+  "uses": [
+    ["Leaderboard", "Each player's farthest hop in one round, shown after every round."],
+    ["Host-run rounds", "The host's browser starts each round with a new world seed, sees who is out and calls the winner; if it leaves, the next player takes over."],
+    ["Bots", "Bots fill the empty seats: they look ahead, wait for gaps and ride the logs, and now and then hop without looking."],
+    ["Live sync", "Everyone builds the same world from one seed and a shared clock, so every car and log is in the same place on every screen."]
+  ],
+  "ideas": [
+    "Add coins on the grass that you can collect",
+    "Make it a winter world with ice and snowplows",
+    "Let players pick an animal before the round starts"
+  ]
+}

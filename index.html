@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Road Hop</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #5fb34a; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 2px 0 #0007, 0 0 6px #0005; }
+  #dist { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); font: 900 40px/1 system-ui, sans-serif; }
+  #dist small { display: block; margin-top: 4px; font-size: 13px; font-weight: 700; }
+  #top { top: max(10px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right)); font-size: 13px; font-weight: 700; min-width: 140px; }
+  #top div { display: flex; justify-content: space-between; gap: 10px; } #top .me { color: #ffe14d; } #top .out { opacity: .45; text-decoration: line-through; }
+  #top .head { opacity: .85; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  #msg { top: 30%; left: 0; right: 0; text-align: center; font: 900 48px/1.05 system-ui, sans-serif; color: #ffe14d; -webkit-text-stroke: 2px #5a3000; }
+  #msg small { display: block; font-size: 18px; color: #fff; -webkit-text-stroke: 0; margin-top: 8px; }
+  #hint { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 26px); left: 50%; transform: translateX(-50%); width: min(440px, 88vw); text-align: center; font-size: 15px; font-weight: 700; padding: 8px 12px; border-radius: 12px; background: #0006; box-sizing: border-box; }
+  #hint:empty { display: none; }
+  #net { bottom: max(6px, env(safe-area-inset-bottom)); left: 0; right: 0; text-align: center; font-size: 12px; opacity: .9; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #10301a77; }
+  #over[hidden] { display: none; }
+  .card { box-sizing: border-box; width: min(380px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 16px; background: #1f3a2af2; border: 2px solid #ffffff33; text-align: center; }
+  .card h2 { margin: 0 0 4px; font-size: 28px; color: #ffe14d; }
+  .card h3 { margin: 14px 0 4px; font-size: 13px; color: #a8f0b8; text-align: left; }
+  .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; } .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffe14d; font-weight: 700; }
+  .card p { margin: 10px 0 0; font-size: 13px; opacity: .8; }
+  button.go { width: 100%; min-height: 48px; margin-top: 16px; border: 0; border-radius: 12px; background: #ffe14d; color: #3a2a00; font: 800 17px system-ui, sans-serif; cursor: pointer; }
+  @media (max-width: 560px) { #top { font-size: 12px; min-width: 112px; } #top div:nth-child(n+8) { display: none; } #msg { font-size: 38px; } #dist { font-size: 32px; } }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud" id="dist"></div>
+<div class="hud" id="top"></div>
+<div class="hud" id="msg"></div>
+<div class="hud" id="hint"></div>
+<div class="hud" id="net">Connecting…</div>
+<div id="over" hidden><div class="card">
+  <h2 id="overTitle"></h2><div id="overSub"></div>
+  <h3>This round</h3><ol id="results"></ol>
+  <h3>Farthest hops ever</h3><ol id="board"><li>Loading…</li></ol>
+  <button class="go" id="again">Next round</button><p id="next"></p>
+</div></div>
+<script>
+/* ═══ ROAD HOP · a Multiplayer Agent starter ═════════════════════════════════════════
+ * Hop forward across endless roads, rivers and train tracks. The roller behind you squishes
+ * anyone who falls too far behind the leader. Last one hopping wins the round.
+ * Versus, 2–12 players; bots fill empty seats.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ hops, the roller, round timing, bots
+ *   WORLD ......... lanes built from the round's seed: grass + trees, roads + cars, rivers + logs,
+ *                   rails + trains. Where everything is at any moment is a function of the clock.
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host, the shared clock
+ *   HOPPERS ....... hopping, riding logs, and what kills you (the same code for people and bots)
+ *   BOTS .......... the bot brain: look ahead in time, hop when it's safe, wait when it isn't
+ *   ROUND (HOST) .. seats, the start, who is out, the winner. Only the host writes these.
+ *   ME ............ my hops, my death, my distance
+ *   VIEWS ......... everyone else, eased toward their latest spot with a little hop
+ *   DRAW .......... lanes, cars, logs, trains, trees, hoppers, the roller, particles
+ *   HUD & RESULTS . distance, the live ranking, banners, results, leaderboard, sounds
+ *   INPUT ......... arrow keys / WASD, and swipe or tap on touch
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - The world is never sent. Every screen builds the same lanes from the round's seed, and every
+ *     car, log and train is at a spot worked out from the SHARED CLOCK: the host writes `clk`
+ *     every 2 seconds, everyone else keeps the offset, so a car is in the same place everywhere.
+ *   - Each player writes its OWN entity: `p` (one JSON field: round, column, row, out + how,
+ *     farthest row) on every hop and about 10 times a second while riding a log, `hb` (heartbeat)
+ *     once a second, `n`/`c` (name, color) once. You decide your own death, on your own screen.
+ *   - The roller follows the leader: everyone works it out from the same positions, and anyone it
+ *     reaches is out.
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s),
+ *     worked out every frame. Only the host writes `clk`, `bots` (the bot hoppers, ~10/s) and
+ *     `round` {id, v, phase: intro|run|end, seed, seats, names, startAt, endsAt, lastAt, winner, out, dist}.
+ *     It reads everyone's `p` to see who is out and calls the winner.
+ *   - Intent to the host: "again" (skip the results wait).
+ *   - A host whose tab froze or went to the background (a frame gap over 1s) stops hosting, waits
+ *     700ms for fresh state, then adopts it like a newly elected host: it never writes its stale copy.
+ *   - Someone who joins mid-round watches the leader, then hops in at the next round.
+ *   - ?attract plays offline with bots only (the preview video is recorded from it).
+ *   - Leaderboard "farthest-hop": each player's farthest distance in one round.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  cols: 11,              // lanes are this many tiles wide (you can't hop off the sides)
+  seats: 6,              // bots fill each round up to this many hoppers
+  maxSeats: 12,          // most hoppers in one round
+  hopMs: 120,            // one hop takes this long
+  introMs: 3000,         // "3, 2, 1" before the first hop
+  endMs: 6000,           // the results card before the next round
+  lastStandMs: 1500,     // once one hopper is left, this long before they're called the winner
+  rollerStart: 3,        // seconds after GO before the roller starts rolling
+  rollerSpeed: 0.35,     // rows per second the roller rolls at the start ...
+  rollerGain: 0.008,     // ... plus this much per second of the round
+  behind: 8,             // rows: fall this far behind the leader and the roller catches you
+  rollerCatchUp: 1.6,    // rows per second (on top of its own speed) the roller moves to keep up with the leader
+  hardAt: 160,           // rows until the lanes are as fast and busy as they get
+  botThink: [140, 320],  // ms a bot waits between decisions (min, max)
+  botSlip: 0.008,        // chance (each think) a bot hops forward without looking
+  sendMs: 100,           // how often your hopper is sent while drifting on a log
+  board: "farthest-hop", // leaderboard: farthest distance in one round
+};
+const BOT_NAMES = ["Clucky", "Hopscotch", "Pip", "Waddles", "Nugget", "Biscuit", "Peep", "Dash", "Pebble", "Noodle", "Tater"];
+const COLORS = ["#ffffff", "#ffd23f", "#ff7ab6", "#5ec8ff", "#ff8a3d", "#b48cff", "#7ee08a", "#ff5d5d", "#40e0d0", "#c0c0c0", "#f4a261", "#9ad1d4"];
+
+// ── WORLD ───────────────────────────────────────────────────────────────────────────
+// Rows are numbered from the start (row 0) forward. A row's lane only depends on the seed and the
+// rows before it, so everyone builds the same world. x is in tiles: column c spans c..c+1.
+const COLS = CONFIG.cols, MARGIN = 5; // cars and logs loop around a track MARGIN tiles past each side
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const mod = (a, n) => ((a % n) + n) % n;
+let world = { seed: 0, lanes: [], rnd: null, run: null };
+function useSeed(seed) { if (world.seed !== seed) world = { seed, lanes: [], rnd: mulberry32(seed), run: null }; }
+/** The lane at row r (built on demand, in order). */
+function laneAt(r) {
+  if (r < 0) return { type: "grass", trees: [], r };
+  while (world.lanes.length <= r) world.lanes.push(makeLane(world.lanes.length));
+  return world.lanes[r];
+}
+function makeLane(r) {
+  const rnd = world.rnd, d = Math.min(1, r / CONFIG.hardAt);
+  if (r < 3) return { r, type: "grass", trees: r === 0 ? [0, COLS - 1] : [] };
+  let run = world.run;
+  if (!run || run.left <= 0) { // a run of lanes of one kind: 1–3 roads, 1–3 rivers, 1–2 rails, 1–2 grass
+    const prev = run ? run.type : "grass", roll = rnd();
+    let type = roll < 0.36 ? "road" : roll < 0.66 ? "river" : roll < 0.8 ? "rail" : "grass";
+    if (type === prev) type = prev === "grass" ? "road" : "grass"; // never two runs of one kind in a row
+    const most = { road: 3, river: 3, rail: 2, grass: 2 }[type];
+    run = world.run = { type, left: 1 + Math.floor(rnd() * most), dir: rnd() < 0.5 ? -1 : 1 };
+  }
+  run.left--;
+  const L = { r, type: run.type, trees: [] };
+  if (L.type === "grass") {
+    const n = Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) { const c = Math.floor(rnd() * COLS); if (!L.trees.includes(c)) L.trees.push(c); }
+  } else if (L.type === "road" || L.type === "river") {
+    const river = L.type === "river";
+    L.dir = river ? (run.dir = -run.dir) : rnd() < 0.5 ? -1 : 1;
+    L.speed = river ? 0.9 + rnd() * 1.1 + d * 0.8 : 1.5 + rnd() * 1.8 + d * 2.2;
+    L.P = COLS + MARGIN * 2 + Math.floor(rnd() * 6); // the loop the cars / logs go round
+    L.items = []; // [offset on the loop, length, look]
+    let at = rnd() * 3;
+    const look = Math.floor(rnd() * 5);
+    while (true) {
+      const len = river ? 2 + Math.floor(rnd() * (3.6 - d * 1.4)) : rnd() < 0.25 ? 2 : 1;
+      if (at + len > L.P - (river ? 1.3 : 1.8)) break;
+      L.items.push([at, len, look]);
+      at += len + (river ? 1.2 + rnd() * (1.6 + d * 1.4) : 2.2 + rnd() * (5 - d * 2.4));
+    }
+  } else if (L.type === "rail") {
+    L.dir = rnd() < 0.5 ? -1 : 1; L.every = 6 + rnd() * 5; L.off = rnd() * L.every; L.len = 10 + Math.floor(rnd() * 6); L.speed = 26;
+  }
+  return L;
+}
+/** Left edge of a car or log at clock time t (seconds). */
+const itemX = (L, it, t) => mod(it[0] + L.dir * L.speed * t, L.P) - MARGIN;
+/** The train on a rail lane at time t: { x (left end), warn } (x null when no train is passing). */
+function trainAt(L, t) {
+  const ph = mod(t + L.off, L.every), x = L.dir > 0 ? -L.len - 2 + ph * L.speed : COLS + 2 - ph * L.speed;
+  const passing = ph * L.speed < COLS + L.len + 4;
+  return { x: passing ? x : null, warn: !passing && ph > L.every - 1.5 };
+}
+const blocked = (c, r) => c < 0 || c >= COLS || r < 0 || laneAt(r).trees.includes(Math.round(c));
+/** The log under a hopper standing at x on river row L, or null (a little forgiving at the ends). */
+function logUnder(L, x, t) { for (const it of L.items) { const lx = itemX(L, it, t); if (x + 0.5 > lx - 0.08 && x + 0.5 < lx + it[1] + 0.08) return it; } return null; }
+/** What would happen to a hopper standing at (x, row) at time t: null (safe) or how it goes out. */
+function danger(x, row, t) {
+  const L = laneAt(row);
+  if (L.type === "road") { for (const it of L.items) { const cx = itemX(L, it, t); if (x + 0.82 > cx && x + 0.18 < cx + it[1]) return "car"; } }
+  else if (L.type === "river") { if (!logUnder(L, x, t)) return "water"; if (x < -0.45 || x > COLS - 0.55) return "swept"; }
+  else if (L.type === "rail") { const tr = trainAt(L, t); if (tr.x !== null && x + 0.85 > tr.x && x + 0.15 < tr.x + L.len) return "train"; }
+  return null;
+}
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'road-hop',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const parsed = new Map();
+/** A JSON value from state, parsed once per change (read-only: never mutate what this returns). */
+function parseOnce(key, raw, fallback) {
+  const c = parsed.get(key);
+  if (c && c.raw === raw) return c.v;
+  const v = parse(raw, fallback); parsed.set(key, { raw, v }); return v;
+}
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+/** Players whose heartbeat moved in the last 3s (plus us), sorted by sessionId. */
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+/** Still in the room and heard from within 6s (a silent player is out of the round). */
+const stillHere = (id) => id === net.sessionId || (!!S.entities.players[id] && performance.now() - (seenHb.get(id)?.at ?? -1e9) < 6000);
+// The shared clock: the host's Date.now() plus its own offset, learned from `clk` changes.
+const clockSync = { offset: 0, seen: undefined, samples: [], lastWrite: 0 };
+const clock = () => Date.now() + clockSync.offset;
+function syncClock(now) {
+  if (host.acting) { if (now - clockSync.lastWrite > 2000) { clockSync.lastWrite = now; net.setShared("clk", clock()); } return; }
+  const clk = Number(S.shared.clk);
+  if (!clk || clk === clockSync.seen) return;
+  if (clockSync.seen !== undefined) { // the first value we see may be old; later changes are fresh
+    clockSync.samples = [...clockSync.samples.slice(-4), clk - Date.now()];
+    clockSync.offset = Math.max(...clockSync.samples); // the least-delayed sample is the best
+  }
+  clockSync.seen = clk;
+}
+
+// ── HOPPERS ─────────────────────────────────────────────────────────────────────────
+// A hopper stands on (x, y): x in tiles (a whole number, except while riding a log), y = row.
+function newHopper(id) { return { id, name: "", color: "#fff", x: 5, y: 1, fx: 5, fy: 1, hopAt: -1e9, face: 0, dead: 0, how: "", best: 1, r: "", diedAt: 0 }; }
+const hopping = (h, now) => now - h.hopAt < CONFIG.hopMs;
+/** Start a hop by (dx, dy) if the spot is free. Returns true if it hopped. */
+function hop(h, dx, dy, now, t) {
+  if (h.dead || hopping(h, now)) return false;
+  let tx = laneAt(h.y).type === "river" ? h.x + dx : Math.round(h.x) + dx;
+  const ty = h.y + dy;
+  if (laneAt(ty).type !== "river") tx = Math.round(tx); // off a log: back onto the grid
+  h.face = dx ? (dx > 0 ? 1 : 3) : dy > 0 ? 0 : 2;
+  if (blocked(Math.round(tx), ty) || tx < -0.45 || tx > COLS - 0.55 || ty < 0) { h.bump = now; return false; }
+  Object.assign(h, { fx: h.x, fy: h.y, x: tx, y: ty, hopAt: now });
+  if (ty > h.best) h.best = ty;
+  return true;
+}
+/** One step for a standing hopper: ride the log, and check what it's standing in. Returns how it went out, or null. */
+function stepHopper(h, dt, now, t, edge) {
+  if (h.dead) return null;
+  const L = laneAt(h.y), air = hopping(h, now);
+  if (L.type === "river" && !air) { const it = logUnder(L, h.x, t); if (it) h.x += L.dir * L.speed * dt; }
+  if (air) return null;
+  if (h.y < edge - 0.35 && !(now < (h.grace || 0))) return "roller";
+  return danger(h.x, h.y, t);
+}
+/** Where a hopper is drawn: mid-hop it moves along an arc from where it took off. */
+function drawPos(h, now) {
+  const k = Math.min(1, (now - h.hopAt) / CONFIG.hopMs);
+  return { x: h.fx + (h.x - h.fx) * k, y: h.fy + (h.y - h.fy) * k, z: Math.sin(k * Math.PI) * 0.35 };
+}
+
+// ── BOTS ────────────────────────────────────────────────────────────────────────────
+/** Safe to stand at (x, row) from t0 for `span` seconds? (riding along if it's a log) */
+function safeFor(x, row, t0, span, edge) {
+  if (row < edge + 0.6) return false;
+  const L = laneAt(row), riding = L.type === "river";
+  for (let s = 0; s <= span + 1e-6; s += 0.05) {
+    const xx = riding ? x + L.dir * L.speed * s : x;
+    if (danger(xx, row, t0 + s)) return false;
+    if (L.type === "rail" && trainAt(L, t0 + s).warn && s < 0.3) return false; // never step onto a track while the light flashes
+  }
+  return true;
+}
+/** The bot brain (also your autopilot in the preview). Picks a hop, or waits. */
+function botThink(b, now, t, edge) {
+  if (b.dead || hopping(b, now) || now < (b.nextAt || 0)) return;
+  b.nextAt = now + CONFIG.botThink[0] + Math.random() * (CONFIG.botThink[1] - CONFIG.botThink[0]);
+  const hop1 = CONFIG.hopMs / 1000, look = 0.55, river = laneAt(b.y).type === "river";
+  const fromX = (dx) => (river ? b.x + dx : Math.round(b.x) + dx);
+  const land = (dx, dy) => { let x = fromX(dx); if (laneAt(b.y + dy).type !== "river") x = Math.round(x); return x; };
+  const ok = (dx, dy, span = look) => { const x = land(dx, dy); return !blocked(Math.round(x), b.y + dy) && x >= -0.4 && x <= COLS - 0.6 && safeFor(x, b.y + dy, t + hop1, span, edge); };
+  if (Math.random() < CONFIG.botSlip && !blocked(Math.round(land(0, 1)), b.y + 1)) { hop(b, 0, 1, now, t); return; } // a careless hop
+  if (ok(0, 1)) { hop(b, 0, 1, now, t); return; }
+  const stay = safeFor(b.x, b.y, t, 0.5, edge);
+  const sides = Math.random() < 0.5 ? [-1, 1] : [1, -1];
+  if (river) { const L = laneAt(b.y); if (b.x + L.dir * L.speed * 1.2 < 0.3 || b.x + L.dir * L.speed * 1.2 > COLS - 1.3) sides.sort((a) => (a === -L.dir ? -1 : 1)); } // drifting to the edge: step against the current
+  if (stay && !(blocked(Math.round(land(0, 1)), b.y + 1))) return; // wait for a gap
+  for (const dx of sides) if (ok(dx, 0, 0.4) && (!stay || Math.random() < 0.6)) { hop(b, dx, 0, now, t); return; }
+  if (stay) return;
+  if (ok(0, -1, 0.4)) { hop(b, 0, -1, now, t); return; }
+}
+
+// ── ROUND (HOST) ────────────────────────────────────────────────────────────────────
+const host = { acting: false, last: null, bots: new Map(), lastBots: 0, again: false };
+/** The round as state has it, or the host's own newer write that hasn't come back yet. `v` only goes up. */
+function round() {
+  const m = parseOnce("round", S.shared.round, null);
+  return host.last && host.acting && (!m || host.last.v > m.v) ? host.last : m;
+}
+function writeRound(m) { m = { ...m, v: (round()?.v ?? 0) + 1 }; host.last = m; net.setShared("round", JSON.stringify(m)); return m; }
+const roundKey = (m) => (m ? String(m.id) : "");
+const humansHere = () => livePlayers().filter((id) => !(ATTRACT && id === me.id) && (id === me.id || S.entities.players[id]?.n));
+const START_COLS = [5, 4, 6, 3, 7, 2, 8, 1, 9, 5, 4, 6];
+const startSpot = (seat) => ({ x: START_COLS[seat % START_COLS.length], y: seat < 9 ? 1 : 0 });
+function adopt() {
+  host.acting = true; host.last = null; host.bots.clear();
+  for (const b of parseOnce("bots", S.shared.bots, [])) host.bots.set(b.id, Object.assign(newHopper(b.id), { name: b.n, color: b.c, x: b.x, y: b.y, fx: b.x, fy: b.y, dead: b.d, how: b.hw || "", best: b.b || b.y, r: b.r, grace: performance.now() + 2500 })); // grace: they stood still while nobody ran them, so the roller spares them a moment
+}
+function makeBot(taken) {
+  const used = new Set([...host.bots.values()].map((b) => b.name)), colors = new Set([...humansHere().map(colorOf), ...[...host.bots.values()].map((b) => b.color)]);
+  const id = "b" + Math.random().toString(36).slice(2, 6);
+  host.bots.set(id, Object.assign(newHopper(id), { name: BOT_NAMES.find((n) => !used.has(n)) || "Bot", color: COLORS.find((c) => !colors.has(c)) || "#ccc" }));
+  taken.push(id);
+  return id;
+}
+/** Everyone here hops this round; bots fill the rest (bots keep their names and colors between rounds). */
+function newRound(prev) {
+  const seats = humansHere().slice(0, CONFIG.maxSeats), keep = prev ? prev.seats.filter((id) => host.bots.has(id)) : [];
+  while (seats.length < CONFIG.seats && keep.length) seats.push(keep.shift());
+  while (seats.length < CONFIG.seats) makeBot(seats);
+  for (const id of [...host.bots.keys()]) if (!seats.includes(id)) host.bots.delete(id);
+  const names = {}; for (const id of seats) names[id] = nameOf(id);
+  return { id: (prev ? prev.id : 0) + 1, phase: "intro", seed: 1 + Math.floor(Math.random() * 2e9), seats, names, startAt: clock() + CONFIG.introMs, endsAt: 0, lastAt: 0, winner: null, out: [], dist: {} };
+}
+/** A hopper's state as the host knows it: { dead, best } (a person who left counts as out). */
+function statusOf(m, id) {
+  if (id === me.id) return { dead: me.r === roundKey(m) && me.dead, best: me.best };
+  if (host.bots.has(id)) { const b = host.bots.get(id); return { dead: b.dead, best: b.best }; }
+  const p = parseOnce("p:" + id, S.entities.players[id]?.p, null), fresh = p && p.r === roundKey(m);
+  return { dead: !stillHere(id) || (fresh && p.d), best: fresh ? p.b : 1 };
+}
+function hostTick(dt, now, t) {
+  if (!host.acting) adopt();
+  let m = round();
+  const c = clock();
+  if (!m) m = writeRound(newRound(null));
+  useSeed(m.seed);
+  if (m.phase === "intro" && c >= m.startAt) m = writeRound({ ...m, phase: "run" });
+  if (m.phase === "intro" && humansHere().some((id) => !m.seats.includes(id))) { const n = newRound(m); m = writeRound({ ...m, seats: n.seats, names: n.names }); } // joined during the countdown: in now
+  if (m.phase === "run") {
+    let { out, dist, lastAt } = m, changed = false;
+    for (const id of m.seats) {
+      const s = statusOf(m, id);
+      if ((s.best || 0) > (dist[id] || 0)) { dist = { ...dist, [id]: s.best }; }
+      if (s.dead && !out.includes(id)) { out = [...out, id]; changed = true; }
+    }
+    const alive = m.seats.filter((id) => !out.includes(id));
+    if (alive.length <= 1 && !lastAt) { lastAt = c; changed = true; }
+    if (changed) m = writeRound({ ...m, out, dist, lastAt });
+    if (lastAt && c - lastAt >= CONFIG.lastStandMs) { // one tick decides it: the last one hopping, else the farthest
+      let winner = alive.length === 1 ? alive[0] : null;
+      if (!winner) { const far = Math.max(...m.seats.map((id) => dist[id] || 0)), top = m.seats.filter((id) => (dist[id] || 0) === far); winner = top.length === 1 ? top[0] : "draw"; }
+      m = writeRound({ ...m, phase: "end", winner, dist, endsAt: c + CONFIG.endMs });
+    }
+  } else if (m.phase === "end" && (c >= m.endsAt || host.again)) m = writeRound(newRound(m));
+  host.again = false;
+  useSeed(m.seed);
+  // the bots hop (the host steps them here, from its own copy)
+  const key = roundKey(m), edge = rollerRow();
+  m.seats.forEach((id, seat) => {
+    const b = host.bots.get(id);
+    if (!b) return;
+    if (b.r !== key) Object.assign(b, newHopper(id), { name: b.name, color: b.color, r: key }, startSpot(seat), { fx: startSpot(seat).x, fy: startSpot(seat).y });
+    if (m.phase !== "run" || b.dead) return;
+    botThink(b, now, t, edge);
+    const how = stepHopper(b, dt, now, t, edge);
+    if (how) knockOut(b, how, now);
+  });
+  if (now - host.lastBots > 100) { // ~10/s, one message for every bot
+    host.lastBots = now;
+    net.setShared("bots", JSON.stringify(m.seats.filter((id) => host.bots.has(id)).map((id) => { const b = host.bots.get(id); return { id, n: b.name, c: b.color, ...wire(b) }; })));
+  }
+}
+
+// ── ME ──────────────────────────────────────────────────────────────────────────────
+const myName = (() => { try { return localStorage.getItem("mpa-name") || ""; } catch { return ""; } })() ||
+  ["Speedy", "Brave", "Fluffy", "Lucky", "Jumpy", "Tiny"][Math.floor(Math.random() * 6)] + " " + ["Chick", "Duck", "Frog", "Bunny", "Goose", "Hen"][Math.floor(Math.random() * 6)];
+const me = Object.assign(newHopper(""), { name: myName, lastSend: 0, shownFor: "", submitted: "" });
+const queue = []; // hops pressed but not done yet (at most 2)
+/** The wire shape of a hopper: my `p`, or one bot in `bots`. */
+const wire = (h) => ({ r: h.r, x: +h.x.toFixed(2), y: h.y, d: h.dead ? 1 : 0, hw: h.how, b: h.best, f: h.face });
+const botView = (id) => (host.acting ? host.bots.get(id) : null) || parseOnce("bots", S.shared.bots, []).find((b) => b.id === id);
+const colorOf = (id) => (id === me.id ? me.color : S.entities.players?.[id]?.c || botView(id)?.color || botView(id)?.c || "#ccc");
+const nameOf = (id) => (id === me.id ? myName : S.entities.players?.[id]?.n || botView(id)?.name || botView(id)?.n || round()?.names?.[id] || "Hopper");
+/** A person whose tab closed without leaving: still in state for a while, but not live. Not drawn. */
+const gone = (id) => id !== me.id && !!S.entities.players[id] && !livePlayers().includes(id);
+/** Everyone in this round as this screen shows them: me, the host's bots, or everyone else's eased view. */
+function hoppers() {
+  const m = round(), out = [];
+  if (!m) return out;
+  for (const id of m.seats) {
+    if (id === me.id) out.push(me);
+    else if (host.acting && host.bots.has(id)) out.push(host.bots.get(id));
+    else if (!gone(id) && views.has(id)) out.push(views.get(id));
+  }
+  return out;
+}
+function knockOut(h, how, now) {
+  Object.assign(h, { dead: 1, how, diedAt: now });
+  outFx(h, how);
+  if (h === me) { publish(true); shake = how === "train" ? 14 : 8; }
+}
+/** The roller's row: it starts slow, speeds up, and never lets anyone fall more than `behind` rows back from the leader. */
+let roller = { key: "", row: -2 };
+/** Move the roller (once a frame). Everyone works it out the same way from the round's start time and the leader's row. */
+function updateRoller(m, t, dt) {
+  if (roller.key !== roundKey(m)) roller = { key: roundKey(m), row: -2 };
+  if (m.phase !== "run") return;
+  const e = Math.max(0, t - m.startAt / 1000 - CONFIG.rollerStart), base = -1 + e * CONFIG.rollerSpeed + e * e * CONFIG.rollerGain / 2;
+  const lead = Math.max(1, ...hoppers().filter((h) => !h.dead).map((h) => h.y));
+  const want = Math.max(base, lead - CONFIG.behind);
+  if (want > roller.row) roller.row = Math.min(want, roller.row + (want - base < 0.01 ? Math.max(3, (want - roller.row) * 3) : CONFIG.rollerCatchUp + CONFIG.rollerSpeed) * dt);
+}
+const rollerRow = () => roller.row;
+function myTick(dt, now, t, m) {
+  const seat = m.seats.indexOf(me.id), key = roundKey(m);
+  if (seat < 0) { queue.length = 0; return; } // watching this round
+  if (me.r !== key) { const s = startSpot(seat); Object.assign(me, newHopper(me.id), { name: myName, color: me.color, r: key, lastSend: 0, shownFor: me.shownFor, submitted: me.submitted }, s, { fx: s.x, fy: s.y }); queue.length = 0; publish(true); }
+  if (me.dead || m.phase !== "run") { if (m.phase !== "run") queue.length = 0; publish(false); return; }
+  if (ATTRACT) botThink(me, now, t, rollerRow());
+  else if (queue.length && !hopping(me, now)) { const [dx, dy] = queue.shift(); if (hop(me, dx, dy, now, t)) { sfx("hop"); publish(true); } }
+  const how = stepHopper(me, dt, now, t, rollerRow());
+  if (how) { knockOut(me, how, now); sfx(how); }
+  publish(false);
+}
+function publish(force) {
+  const now = performance.now();
+  const riding = laneAt(me.y).type === "river" && !me.dead;
+  if (!force && (!riding || now - me.lastSend < CONFIG.sendMs)) { if (now - me.lastSend < 1000) return; } // on the grid: only hops (and a slow refresh) go out
+  me.lastSend = now;
+  net.me.set("p", JSON.stringify(wire(me)));
+}
+/** Two people in one color (or a bot has mine): the one with the higher sessionId picks a free color. */
+function fixColor() {
+  const others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
+  const botColors = (host.acting ? [...host.bots.values()].map((b) => b.color) : parseOnce("bots", S.shared.bots, []).map((b) => b.c));
+  if (!others.some(([id, p]) => p.c === me.color && id < net.sessionId) && !botColors.includes(me.color)) return;
+  const taken = new Set([...others.map(([, p]) => p.c), ...botColors]), free = COLORS.find((c) => !taken.has(c));
+  if (free) { me.color = free; net.me.set("c", free); }
+}
+
+// ── VIEWS ───────────────────────────────────────────────────────────────────────────
+// Everyone else (and, off the host, the bots): a hop arc to each new spot; smooth drifting on logs.
+const views = new Map();
+function syncViews(dt, now, m) {
+  const seen = new Set(), key = roundKey(m);
+  for (const id of m.seats) {
+    if (id === me.id || (host.acting && host.bots.has(id))) continue;
+    const bot = S.entities.players[id] ? null : parseOnce("bots", S.shared.bots, []).find((b) => b.id === id);
+    const raw = bot || S.entities.players[id]?.p, f = bot || parseOnce("p:" + id, raw, null);
+    if (!f || typeof f.x !== "number" || f.r !== key) continue;
+    seen.add(id);
+    let v = views.get(id);
+    if (!v) { v = Object.assign(newHopper(id), { x: f.x, y: f.y, fx: f.x, fy: f.y, dead: f.d, raw: null }); views.set(id, v); } // already out when I first see them: no splat
+    if (raw !== v.raw) {
+      v.raw = raw;
+      if (f.d && !v.dead) { v.x = f.x; v.y = f.y; v.fx = f.x; v.fy = f.y; outFx(v, f.hw); }
+      const jump = Math.abs(f.y - v.y) >= 0.5 || Math.abs(f.x - v.x) >= 0.6;
+      if (jump) { const p = drawPos(v, now); Object.assign(v, { fx: p.x, fy: p.y, x: f.x, y: f.y, hopAt: now }); }
+      Object.assign(v, { gx: f.x, dead: f.d, how: f.hw, best: f.b, face: f.f || 0, name: nameOf(id), color: colorOf(id) });
+    }
+    if (!hopping(v, now) && v.gx != null) { // drifting on a log: ease along, a little ahead with the current
+      const L = laneAt(v.y);
+      if (L.type === "river" && !v.dead) { v.gx += L.dir * L.speed * dt; v.x += (v.gx - v.x) * Math.min(1, dt * 10); }
+    }
+  }
+  for (const id of views.keys()) if (!seen.has(id)) views.delete(id);
+}
+
+// ── DRAW ────────────────────────────────────────────────────────────────────────────
+// A top-down view with a little height: things have a lit top and a darker front face.
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, T = 40, cam = { y: 0 }, shake = 0;
+const touchUI = matchMedia("(pointer: coarse)").matches && !ATTRACT;
+function fit() {
+  DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR;
+  T = Math.max(18, Math.min(W / (COLS + 0.6), H / (ATTRACT ? 9.5 : 13.5)));
+}
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+const sx = (x) => W / 2 + (x - COLS / 2) * T;          // world x -> screen x
+const sy = (row) => H - (row - cam.y + 0.5) * T;       // row -> screen y of its middle
+function shade(hex, k) { const n = parseInt(hex.slice(1), 16); return `rgb(${Math.min(255, ((n >> 16) & 255) * k) | 0},${Math.min(255, ((n >> 8) & 255) * k) | 0},${Math.min(255, (n & 255) * k) | 0})`; }
+/** A box with a lit top and a front face: (x, y) is the top-left of its footprint in screen px. */
+function box(x, y, w, d, h, top, front) { ctx.fillStyle = front; ctx.fillRect(x, y + d - h, w, h); ctx.fillStyle = top; ctx.fillRect(x, y - h, w, d); }
+const bits = [], decals = [];
+function outFx(h, how) {
+  const p = { x: h.x + 0.5, y: h.y };
+  if (how === "water" || how === "swept") { for (let i = 0; i < 18; i++) { const a = Math.random() * Math.PI * 2; bits.push({ x: p.x, y: p.y, vx: Math.cos(a) * 2, vy: Math.sin(a) * 2, z: 0, vz: 3 + Math.random() * 3, life: 0.6, color: i % 2 ? "#e6f7ff" : "#7fd3ff" }); } decals.push({ x: p.x, y: p.y, kind: "ring", at: performance.now() }); }
+  else { for (let i = 0; i < 22; i++) { const a = Math.random() * Math.PI * 2; bits.push({ x: p.x, y: p.y, vx: Math.cos(a) * 3, vy: Math.sin(a) * 3, z: 0.3, vz: 2 + Math.random() * 4, life: 0.7, color: i % 3 ? h.color : "#fff" }); } decals.push({ x: p.x - 0.5, y: p.y, kind: "flat", color: h.color, at: performance.now() }); }
+  if (h === me || how === "train") shake = Math.max(shake, 6);
+}
+function stepFx(dt) {
+  for (let i = bits.length - 1; i >= 0; i--) { const b = bits[i]; b.life -= dt; b.x += b.vx * dt; b.y += b.vy * dt; b.vz -= 14 * dt; b.z = Math.max(0, b.z + b.vz * dt); if (b.life <= 0) bits.splice(i, 1); }
+  while (decals.length > 40) decals.shift();
+  shake *= Math.pow(0.02, dt);
+}
+const GRASS = ["#7fcf5b", "#76c653"], ROAD = "#4a4f5c", WATER = "#3fa9f5", RAIL = "#8d7a66";
+const CAR_COLORS = ["#ff5d5d", "#ffd23f", "#4dabff", "#b48cff", "#ff8a3d"];
+function drawLane(L, t, y0, now) {
+  const top = y0 - T / 2;
+  if (L.type === "grass") {
+    ctx.fillStyle = GRASS[mod(L.r, 2)]; ctx.fillRect(0, top, W, T);
+  } else if (L.type === "road") {
+    ctx.fillStyle = ROAD; ctx.fillRect(0, top, W, T);
+    const above = laneAt(L.r + 1);
+    if (above.type === "road") { ctx.fillStyle = "#e9e3c9aa"; for (let x = 0; x < W; x += T * 0.9) ctx.fillRect(x, top - 1, T * 0.45, 2); }
+    else { ctx.fillStyle = "#9aa0ad"; ctx.fillRect(0, top, W, 3); }
+  } else if (L.type === "river") {
+    ctx.fillStyle = WATER; ctx.fillRect(0, top, W, T);
+    ctx.fillStyle = "#ffffff30"; for (let i = 0; i < 9; i++) { const x = mod(i * 97 + L.r * 31 + L.dir * t * L.speed * T * 0.6, W + 40) - 20; ctx.fillRect(x, top + T * (0.25 + (i % 3) * 0.22), T * 0.5, 2); }
+  } else if (L.type === "rail") {
+    ctx.fillStyle = RAIL; ctx.fillRect(0, top, W, T);
+    ctx.fillStyle = "#5e4a38"; for (let x = mod(sx(0), T * 0.5); x < W; x += T * 0.5) ctx.fillRect(x, top + T * 0.12, T * 0.18, T * 0.76);
+    ctx.fillStyle = "#c9ced8"; ctx.fillRect(0, top + T * 0.28, W, 3); ctx.fillRect(0, top + T * 0.68, W, 3);
+  }
+}
+function drawLaneThings(L, t, y0, now) {
+  if (L.type === "grass") for (const c of L.trees) { // a tree: trunk and two round canopies
+    const x = sx(c + 0.5), y = y0 + T * 0.2;
+    ctx.fillStyle = "#00000030"; ctx.beginPath(); ctx.ellipse(x + 3, y, T * 0.38, T * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#7a4f2c"; ctx.fillRect(x - T * 0.08, y - T * 0.35, T * 0.16, T * 0.35);
+    ctx.fillStyle = "#2f8f3a"; ctx.beginPath(); ctx.arc(x, y - T * 0.55, T * 0.36, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#4cb84a"; ctx.beginPath(); ctx.arc(x - T * 0.06, y - T * 0.66, T * 0.24, 0, Math.PI * 2); ctx.fill();
+  }
+  if (L.type === "road") for (const it of L.items) { // cars and trucks
+    const x = sx(itemX(L, it, t)), w = it[1] * T, y = y0 - T * 0.32, col = CAR_COLORS[(it[2] + Math.round(it[0])) % CAR_COLORS.length];
+    if (x > W + 10 || x + w < -10) continue;
+    ctx.fillStyle = "#00000035"; ctx.fillRect(x + 4, y + T * 0.42, w - 4, T * 0.22);
+    if (it[1] >= 2) { box(x + 2, y + T * 0.06, w - 4, T * 0.5, T * 0.34, "#e8e8ee", "#b5b8c4"); const cab = L.dir > 0 ? x + w - T * 0.62 : x + 2; box(cab, y + T * 0.06, T * 0.6, T * 0.5, T * 0.26, col, shade(col, 0.7)); }
+    else { box(x + 3, y + T * 0.08, w - 6, T * 0.5, T * 0.2, col, shade(col, 0.68)); box(x + w * 0.24, y + T * 0.12, w * 0.5, T * 0.38, T * 0.38, shade(col, 1.15), "#9fd8ff"); }
+    ctx.fillStyle = "#fff8b0"; ctx.fillRect(L.dir > 0 ? x + w - 4 : x + 1, y + T * 0.12, 3, T * 0.12); ctx.fillRect(L.dir > 0 ? x + w - 4 : x + 1, y + T * 0.42, 3, T * 0.12);
+  }
+  if (L.type === "river") for (const it of L.items) { // logs
+    const x = sx(itemX(L, it, t)), w = it[1] * T, y = y0 - T * 0.3;
+    if (x > W + 10 || x + w < -10) continue;
+    box(x + 2, y + T * 0.08, w - 4, T * 0.5, T * 0.12, "#a8683a", "#6e4022");
+    ctx.fillStyle = "#8a522c"; for (let k = 1; k < it[1]; k++) ctx.fillRect(x + k * T - 1, y - T * 0.04, 2, T * 0.5);
+    ctx.fillStyle = "#d9a36a"; ctx.beginPath(); ctx.ellipse(x + 4, y + T * 0.33 - T * 0.12, 3, T * 0.22, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  if (L.type === "rail") { // the signal and, now and then, a train
+    const tr = trainAt(L, t), lx = sx(L.dir > 0 ? COLS + 0.2 : -0.6);
+    ctx.fillStyle = "#333"; ctx.fillRect(lx + 6, y0 - T * 0.9, 3, T * 0.9);
+    const on = tr.warn && Math.floor(now / 160) % 2 === 0;
+    ctx.fillStyle = on ? "#ff3b3b" : "#552222"; ctx.beginPath(); ctx.arc(lx + 7.5, y0 - T * 0.9, T * 0.14, 0, Math.PI * 2); ctx.fill();
+    if (on) { ctx.fillStyle = "#ff3b3b33"; ctx.fillRect(0, y0 - T / 2, W, T); }
+    if (tr.x !== null) {
+      const x = sx(tr.x), w = L.len * T, y = y0 - T * 0.4;
+      for (let k = 0; k < L.len; k += 3.4) { const cx = x + k * T, cw = Math.min(3.2, L.len - k) * T; box(cx + 2, y, cw - 3, T * 0.62, T * 0.5, k === 0 && L.dir < 0 || k + 3.4 >= L.len && L.dir > 0 ? "#ff5d5d" : "#3d7be0", "#24467f");
+        ctx.fillStyle = "#cfe9ff"; for (let wx = cx + T * 0.4; wx < cx + cw - T * 0.4; wx += T * 0.7) ctx.fillRect(wx, y + T * 0.62 - T * 0.4, T * 0.35, T * 0.2); }
+    }
+  }
+}
+function drawHopper(h, now, label, up = 0) {
+  const p = drawPos(h, now);
+  const x = sx(p.x + 0.5), y = sy(p.y), s = T * 0.64, lift = p.z * T, bumped = now - (h.bump || -1e9) < 120 ? 3 : 0;
+  ctx.fillStyle = "#00000035"; ctx.beginPath(); ctx.ellipse(x, y + s * 0.42, s * 0.5 * (1 - p.z * 0.6), s * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+  const bx = x - s / 2, by = y - s * 0.25 - lift - bumped, squash = hopping(h, now) ? 0 : Math.sin(now / 300 + h.x) * 1.2;
+  ctx.fillStyle = "#1d1d2a"; ctx.fillRect(bx - 2, by + squash - (s * 0.55 - squash) - 2, s + 4, s * 0.7 + 4); // a dark outline, so hoppers stand out from the cars
+  box(bx, by + squash, s, s * 0.7, s * 0.55 - squash, h.color, shade(h.color, 0.72)); // the body: a little cube
+  ctx.fillStyle = "#ffffff55"; ctx.fillRect(bx + 2, by + squash - (s * 0.55 - squash) + 2, s * 0.3, 3); // a shine on top
+  ctx.fillStyle = shade(h.color, 0.85); for (const k of [-1, 1]) ctx.fillRect(x + k * s * 0.5 - (k > 0 ? 0 : 4), by - s * 0.05 + squash, 4, s * 0.22); // little wings
+  const fx = [0, 1, 0, -1][h.face || 0], fy = [1, 0, -1, 0][h.face || 0]; // facing: 0 forward (up the screen), 1 right, 2 back, 3 left
+  ctx.fillStyle = "#ff4d4d"; ctx.fillRect(x - s * 0.1, by - s * 0.62 + squash, s * 0.2, s * 0.14); // comb
+  ctx.fillStyle = "#ffb020"; ctx.fillRect(x - s * 0.08 + fx * s * 0.42, by - s * 0.2 - fy * s * 0.28 + squash, s * 0.16, s * 0.12); // beak
+  ctx.fillStyle = "#1b1b1b";
+  for (const k of [-1, 1]) ctx.fillRect(x + (fx ? fx * s * 0.2 : k * s * 0.18) - 2, by - s * 0.36 - (fy ? fy * s * 0.1 : 0) + (fx ? k * s * 0.08 : 0) + squash, 4, 4);
+  if (label) {
+    ctx.font = `800 ${Math.max(11, T * 0.3)}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.lineWidth = 3; ctx.strokeStyle = "#000a";
+    ctx.strokeText(label, x, by - s * 0.75 - up); ctx.fillStyle = h === me ? "#ffe14d" : "#fff"; ctx.fillText(label, x, by - s * 0.75 - up);
+  }
+}
+function drawRoller(edge, now) {
+  const y = sy(edge - 0.6), h = T * 0.9;
+  if (y > H + h) return;
+  ctx.fillStyle = "#1d2230b0"; ctx.fillRect(0, y + h * 0.35, W, H - y); // the flattened ground it leaves behind
+  const g = ctx.createLinearGradient(0, y - h / 2, 0, y + h / 2); g.addColorStop(0, "#ffd84d"); g.addColorStop(0.5, "#f5b50a"); g.addColorStop(1, "#a86f00");
+  ctx.fillStyle = g; ctx.fillRect(0, y - h / 2, W, h); // the drum
+  ctx.fillStyle = "#00000030"; for (let x = mod(now / 6, 26) - 26; x < W; x += 26) ctx.fillRect(x, y - h / 2, 8, h);
+  ctx.fillStyle = "#3b3b3b"; for (let x = 18; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, y + h / 2); ctx.lineTo(x + 10, y + h / 2 + 8); ctx.lineTo(x + 20, y + h / 2); ctx.fill(); }
+}
+function draw(m, t, now) {
+  const all = hoppers(), alive = all.filter((h) => !h.dead), edge = rollerRow();
+  const focus = me.r === roundKey(m) && !me.dead && !ATTRACT ? me.y : Math.max(...(alive.length ? alive : all.length ? all : [me]).map((h) => h.y));
+  const rows = H / T, pack = alive.length ? Math.min(...alive.map((h) => h.y)) : focus;
+  const wantY = ATTRACT ? Math.max(Math.max(edge - 1.05, pack - 2.2), focus - rows + 1.5) // the preview frames the whole pack (the leader stays on screen)
+    : Math.max(edge - 1.05, focus - rows + 4.5); // the roller sits at the bottom, unless you're far enough ahead to leave it behind
+  cam.y += (wantY - cam.y) * (Math.abs(wantY - cam.y) > 6 ? 1 : 0.15);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const ox = (Math.random() - 0.5) * shake, oy = (Math.random() - 0.5) * shake;
+  ctx.translate(ox, oy);
+  const r0 = Math.floor(cam.y) - 1, r1 = Math.ceil(cam.y + rows) + 1;
+  for (let r = r1; r >= r0; r--) drawLane(laneAt(r), t, sy(r), now);
+  ctx.fillStyle = "#00000038"; ctx.fillRect(-20, -20, sx(0) + 20, H + 40); ctx.fillRect(sx(COLS), -20, W, H + 40); // outside the lanes you can hop on: a little darker
+  for (const d of decals) { // splats and ripples
+    const age = (now - d.at) / 1000, x = sx(d.x + 0.5), y = sy(d.y);
+    if (d.kind === "ring") { if (age > 1.2) continue; ctx.strokeStyle = `rgba(255,255,255,${1 - age / 1.2})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(x - T / 2, y, T * (0.2 + age * 0.6), T * (0.1 + age * 0.25), 0, 0, Math.PI * 2); ctx.stroke(); }
+    else { ctx.fillStyle = d.color; ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.ellipse(x, y + T * 0.1, T * 0.45, T * 0.2, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
+  }
+  const label = (h) => (ATTRACT ? "" : h === me ? "YOU" : m.phase === "intro" ? h.name || nameOf(h.id) : "");
+  for (let r = r1; r >= r0; r--) { // back to front: lane things and the hoppers standing on that row
+    const L = laneAt(r);
+    drawLaneThings(L, t, sy(r), now);
+    for (const h of alive) if (Math.round(drawPos(h, now).y) === r) drawHopper(h, now, label(h), (m.seats.indexOf(h.id) % 2) * Math.max(12, T * 0.32)); // names take turns high and low so neighbours don't overlap
+  }
+  for (const b of bits) { ctx.globalAlpha = Math.min(1, b.life * 2); ctx.fillStyle = b.color; ctx.fillRect(sx(b.x) - 2.5, sy(b.y) - b.z * T * 0.5 - 2.5, 5, 5); }
+  ctx.globalAlpha = 1;
+  drawRoller(edge, now);
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+let board = null, dropped = false, announced = "";
+const startedAt = performance.now();
+const HOW = { car: "Splat! A car got you.", water: "Splash! Into the river.", swept: "The log carried you away.", train: "Hit by a train!", roller: "The roller caught up with you." };
+const distOf = (h) => Math.max(0, (h.best || 1) - 1);
+function hud(m, now) {
+  const c = clock(), seated = m.seats.includes(me.id), wn = (id) => (id === me.id ? "You" : m.names[id] || nameOf(id));
+  let msg = "";
+  if (m.phase === "intro") { const s = Math.ceil((m.startAt - c) / 1000); msg = s > 0 ? `${s}<small>Hop forward. Last one hopping wins.</small>` : "GO!"; }
+  else if (m.phase === "run" && c - m.startAt < 700) msg = "GO!";
+  else if (m.phase === "end") msg = m.winner === "draw" ? "DRAW!" : m.winner === me.id ? "YOU WIN!" : `${esc(wn(m.winner).toUpperCase())} WINS!`;
+  else if (!ATTRACT && m.phase === "run") {
+    if (!seated) msg = "<small>You're in next round. Watch this one!</small>";
+    else if (me.dead) msg = `<small>${HOW[me.how] || "Out!"} Watch who wins.</small>`;
+  }
+  $("msg").innerHTML = msg;
+  if (msg !== announced) { announced = msg; if (/GO!|WIN/.test(msg)) sfx(/GO!/.test(msg) ? "go" : "win"); else if (/^\d/.test(msg)) sfx("tick"); }
+  if (ATTRACT) { for (const id of ["dist", "top", "hint", "net"]) $(id).textContent = ""; $("over").hidden = true; return; }
+  $("dist").innerHTML = seated ? `${distOf(me)}<small>${me.dead ? "you're out" : "hops forward"}</small>` : "";
+  const list = hoppers(), rows = m.seats.filter((id) => !gone(id)).map((id) => { const h = list.find((q) => q.id === id); return { id, d: Math.max(h ? distOf(h) : 0, (m.dist[id] || 1) - 1), out: m.out.includes(id) || (h && h.dead) }; })
+    .sort((a, b) => (a.out - b.out) || b.d - a.d);
+  $("top").innerHTML = `<div class="head"><span>${rows.filter((r) => !r.out).length} still hopping</span></div>` + rows.slice(0, 8).map((r) => `<div class="${r.id === me.id ? "me" : ""} ${r.out ? "out" : ""}"><span>${esc(wn(r.id))}</span><span>${r.d}</span></div>`).join("");
+  $("hint").textContent = performance.now() - startedAt < 15000 && seated && !me.dead ? (touchUI ? "Tap to hop forward · swipe to hop any way" : "↑ hop forward · ← → sideways · ↓ back · don't let the roller catch you") : "";
+  const n = livePlayers().length;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the round" : ""}`;
+  const showOver = m.phase === "end" && c > m.endsAt - CONFIG.endMs + 1300;
+  $("over").hidden = !showOver;
+  if (showOver) {
+    $("overTitle").textContent = m.winner === "draw" ? "Draw!" : m.winner === me.id ? "You win!" : `${wn(m.winner)} wins!`;
+    $("overSub").textContent = seated ? `You hopped ${Math.max(distOf(me), (m.dist[me.id] || 1) - 1)} forward.` : "";
+    const ranking = [...m.seats].sort((a, b) => (b === m.winner) - (a === m.winner) || (m.dist[b] || 0) - (m.dist[a] || 0));
+    $("results").innerHTML = ranking.map((id) => `<li class="${id === me.id ? "me" : ""}">${esc(id === me.id ? myName : m.names[id] || nameOf(id))}${id === m.winner ? " 🏆" : ""}<span>${Math.max(0, (m.dist[id] || 1) - 1)}</span></li>`).join("");
+    $("next").textContent = `Next round in ${Math.max(0, Math.ceil((m.endsAt - c) / 1000))}s`;
+    if (me.shownFor !== roundKey(m)) { me.shownFor = roundKey(m); showBoard(seated ? Math.max(distOf(me), (m.dist[me.id] || 1) - 1) : 0); }
+  }
+}
+function showBoard(score) {
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  (score > 0 ? board.submit(score).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No hops yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+$("again").onclick = () => { if (host.acting) host.again = true; else net.send("again", {}); };
+let audio = null; // made on the first tap or key (browsers block sound before that)
+function sfx(kind) {
+  if (!audio || ATTRACT) return;
+  const [f0, f1, dur, vol, type] = { hop: [520, 760, 0.06, 0.04, "square"], car: [300, 60, 0.3, 0.1, "sawtooth"], water: [900, 120, 0.35, 0.06, "sine"], swept: [700, 140, 0.4, 0.06, "sine"],
+    train: [180, 40, 0.6, 0.12, "sawtooth"], roller: [140, 40, 0.5, 0.12, "square"], tick: [660, 660, 0.08, 0.05, "sine"], go: [880, 1320, 0.25, 0.06, "triangle"], win: [520, 1040, 0.5, 0.06, "triangle"] }[kind] || [440, 440, 0.05, 0.02, "sine"];
+  const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur);
+}
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+const KEYS = { arrowup: [0, 1], w: [0, 1], arrowdown: [0, -1], s: [0, -1], arrowleft: [-1, 0], a: [-1, 0], arrowright: [1, 0], d: [1, 0], " ": [0, 1] };
+function want(dx, dy) { if (queue.length < 2) queue.push([dx, dy]); }
+addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  try { audio ||= new AudioContext(); } catch {}
+  if (KEYS[k]) { e.preventDefault(); if (!e.repeat) want(...KEYS[k]); }
+});
+// Touch (and mouse): a tap hops forward, a swipe hops that way.
+const swipe = { id: -1, x: 0, y: 0, done: false };
+cv.addEventListener("pointerdown", (e) => { e.preventDefault(); try { audio ||= new AudioContext(); } catch {} Object.assign(swipe, { id: e.pointerId, x: e.clientX, y: e.clientY, done: false }); });
+cv.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== swipe.id || swipe.done) return;
+  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+  if (Math.hypot(dx, dy) < 28) return;
+  swipe.done = true;
+  if (Math.abs(dx) > Math.abs(dy)) want(Math.sign(dx), 0); else want(0, dy < 0 ? 1 : -1);
+});
+addEventListener("pointerup", (e) => { if (e.pointerId === swipe.id) { if (!swipe.done && e.target === cv) want(0, 1); swipe.id = -1; } });
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let last = performance.now(), lastReal = performance.now(), lastHb = 0, lastHud = 0, hostHoldUntil = 0, wokeAt = -1, stateAt = 0;
+function frame(now) {
+  requestAnimationFrame(frame); // first, so one error can't stop the game
+  const real = performance.now(); // (the frame's own timestamp can be from before a long freeze ended)
+  if (real - lastReal > 1000) { host.acting = false; host.last = null; wokeAt = real; } // woke from a freeze or a background tab: wait for fresh state and adopt it (never write our stale copy)
+  lastReal = real;
+  if (wokeAt >= 0 && stateAt > wokeAt) { hostHoldUntil = stateAt + 700; wokeAt = -1; }
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // never negative: the first frame can be stamped before `last`
+  if (real - lastHb > 1000) { lastHb = real; net.me.set("hb", Date.now()); fixColor(); }
+  const t = clock() / 1000;
+  if (isHost() && wokeAt < 0 && real >= hostHoldUntil && !dropped) hostTick(dt, real, t); else host.acting = false;
+  syncClock(real);
+  const m = round();
+  if (!m) return;
+  useSeed(m.seed);
+  updateRoller(m, t, dt);
+  syncViews(dt, real, m);
+  myTick(dt, real, t, m);
+  stepFx(dt);
+  draw(m, t, real);
+  if (real - lastHud > 100) { lastHud = real; hud(m, real); }
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; stateAt = performance.now(); });
+  net.on("again", () => { if (host.acting) host.again = true; });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set([...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...parse(S.shared.bots, []).map((b) => b.c)]);
+  me.id = net.sessionId; me.color = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: me.color, hb: Date.now() });
+  if (ATTRACT) Object.assign(CONFIG, { seats: 6, introMs: 600, endMs: 1500, lastStandMs: 900, rollerStart: 1, rollerSpeed: 0.8, rollerGain: 0.04, behind: 6, botSlip: 0.01 });
+  last = lastReal = performance.now(); // joining can take a few seconds: that's not a freeze
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
