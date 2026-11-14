@@ -24,7 +24,7 @@
   .card { box-sizing: border-box; width: min(380px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 16px; background: #1f3a2af2; border: 2px solid #ffffff33; text-align: center; }
   .card h2 { margin: 0 0 4px; font-size: 28px; color: #ffe14d; }
   .card h3 { margin: 14px 0 4px; font-size: 13px; color: #a8f0b8; text-align: left; }
-  .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; } .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffe14d; font-weight: 700; }
+  .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; } .card li.note { list-style: none; margin-left: -24px; } /* a status line, not a numbered entry */ .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffe14d; font-weight: 700; }
   .card p { margin: 10px 0 0; font-size: 13px; opacity: .8; }
   button.go { width: 100%; min-height: 48px; margin-top: 16px; border: 0; border-radius: 12px; background: #ffe14d; color: #3a2a00; font: 800 17px system-ui, sans-serif; cursor: pointer; }
   @media (max-width: 560px) { #top { font-size: 12px; min-width: 112px; } #top div:nth-child(n+8) { display: none; } #msg { font-size: 38px; } #dist { font-size: 32px; } }
@@ -41,7 +41,7 @@
 <div id="over" hidden><div class="card">
   <h2 id="overTitle"></h2><div id="overSub"></div>
   <h3>This round</h3><ol id="results"></ol>
-  <h3>Farthest hops ever</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Farthest hops ever</h3><ol id="board"><li class="note">Loading…</li></ol>
   <button class="go" id="again">Next round</button><p id="next"></p>
 </div></div>
 <script>
@@ -672,11 +672,11 @@ function hud(m, now) {
 }
 function showBoard(score) {
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = `<li class="note">Leaderboards need a connection.</li>`; return; }
+  list.innerHTML = `<li class="note">Loading…</li>`;
   (score > 0 ? board.submit(score).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No hops yet. Be the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : `<li class="note">No hops yet. Be the first.</li>`;
+  }).catch(() => { list.innerHTML = `<li class="note">Couldn't load the leaderboard.</li>`; });
 }
 $("again").onclick = () => { if (host.acting) host.again = true; else net.send("again", {}); };
 let audio = null; // made on the first tap or key (browsers block sound before that)
@@ -700,7 +700,8 @@ addEventListener("keydown", (e) => {
 });
 // Touch (and mouse): a tap hops forward, a swipe hops that way.
 const swipe = { id: -1, x: 0, y: 0, done: false };
-cv.addEventListener("pointerdown", (e) => { e.preventDefault(); try { audio ||= new AudioContext(); } catch {} Object.assign(swipe, { id: e.pointerId, x: e.clientX, y: e.clientY, done: false }); });
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+cv.addEventListener("pointerdown", (e) => { e.preventDefault(); try { audio ||= new AudioContext(); } catch {} if (e.button !== 0) return; Object.assign(swipe, { id: e.pointerId, x: e.clientX, y: e.clientY, done: false }); });
 cv.addEventListener("pointermove", (e) => {
   if (e.pointerId !== swipe.id || swipe.done) return;
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
